@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>象棋复盘 · 与 AI 对弈</title>
+  <meta name="description" content="和 AI 下中国象棋，下完后逐步复盘：每一步好不好、应该怎么走。">
+  <meta name="theme-color" content="#f3ecdf">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23eccf95' stroke='%23a3271c' stroke-width='4'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle' fill='%23a3271c' font-family='serif' font-weight='700'%3E帅%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="seal" aria-hidden="true">弈</span>
+      <div>
+        <h1>象棋复盘</h1>
+        <p>和 AI 下一盘，下完逐步讲给你听</p>
+      </div>
+    </div>
+  </header>
+
+  <div class="notice" id="notice" hidden></div>
+
+  <main class="layout">
+    <section class="stage" aria-label="棋盘">
+      <div class="seat" id="seatTop"></div>
+      <div class="board-box">
+        <svg id="board" role="img" aria-label="中国象棋棋盘"></svg>
+      </div>
+      <div class="seat" id="seatBottom"></div>
+      <div class="nav" id="nav" hidden>
+        <button type="button" id="navFirst" title="回到开局" aria-label="回到开局">⏮</button>
+        <button type="button" id="navPrev" class="wide">◀ 上一步</button>
+        <span id="navPos" class="nav-pos"></span>
+        <button type="button" id="navNext" class="wide">下一步 ▶</button>
+        <button type="button" id="navLast" title="跳到终局" aria-label="跳到终局">⏭</button>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <section id="playPanel">
+        <div class="card" id="statusCard" aria-live="polite"></div>
+
+        <div class="card controls">
+          <div class="fields">
+            <label class="field">
+              <span>你执</span>
+              <select id="selSide">
+                <option value="0">红方（先手）</option>
+                <option value="1">黑方（后手）</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>AI 难度</span>
+              <select id="selLevel"></select>
+            </label>
+          </div>
+          <div class="buttons">
+            <button type="button" id="btnNew">新对局</button>
+            <button type="button" id="btnUndo">悔棋</button>
+            <button type="button" id="btnHint">提示</button>
+            <button type="button" id="btnResign">认输</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>棋谱</h2>
+          <div class="moves" id="moveList"></div>
+        </div>
+      </section>
+
+      <section id="reviewPanel" hidden>
+        <div class="card" id="summaryCard"></div>
+        <div class="card" id="detailCard" aria-live="polite"></div>
+        <div class="card">
+          <h2>棋谱 <small>点任意一步查看讲解</small></h2>
+          <div class="moves" id="reviewMoves"></div>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <footer class="foot">引擎完全在你的浏览器里运行，对局不会上传。</footer>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

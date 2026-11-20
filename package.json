@@ -1,0 +1,11 @@
+{
+  "name": "xiangqi-review",
+  "version": "1.0.0",
+  "description": "与 AI 下中国象棋，并在赛后逐步复盘",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "test": "node --test"
+  }
+}
