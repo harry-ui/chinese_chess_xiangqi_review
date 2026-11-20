@@ -162,12 +162,13 @@ select { border: 1px solid var(--line); background: #fff; border-radius: 10px; p
 .progress-bar { height: 6px; border-radius: 3px; background: #eadfca; overflow: hidden; }
 .progress-bar i { display: block; height: 100%; background: var(--accent); transition: width .2s; }
 .progress-text { font-size: 12.5px; color: var(--ink-2); margin-top: 4px; }
+.sum-notice { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: #fff1d6; border: 1px solid #efcf8d; color: #6b4a00; font-size: 13px; }
 .chart-wrap { margin-top: 12px; }
 .chart-cap { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-3); margin-bottom: 2px; }
 #chart { display: block; width: 100%; height: auto; border-radius: 8px; cursor: pointer; background: #6d5642; }
 .keys { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; color: var(--ink-2); }
 .keys button { min-height: 30px; padding: 2px 10px; font-family: var(--kai); font-size: 15.5px; display: inline-flex; align-items: center; gap: 6px; }
-.sum-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 12px; }
+.sum-actions { display: grid; grid-template-columns: 1.35fr 1fr 1fr; gap: 8px; margin-top: 12px; }
 .sum-actions select { min-width: 0; }
 
 /* 单步讲解 */

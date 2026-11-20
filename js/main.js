@@ -5,6 +5,7 @@ import { moveToChinese, lineToChinese } from './notation.js';
 import { bookMove } from './book.js';
 import { BoardView } from './board.js';
 import { CLASSES, CLASS_ORDER, classify, explain, summarize, formatScore, winProb } from './review.js';
+import { PikafishPool, PIKAFISH_BYTES } from './pikafish.js';
 
 const LEVELS = [
   { id: 1, name: '新手', random: { depth: 1, margin: 150 } },
@@ -12,14 +13,19 @@ const LEVELS = [
   { id: 3, name: '业余', timeMs: 300, maxDepth: 4 },
   { id: 4, name: '棋手', timeMs: 1000, maxDepth: 8 },
   { id: 5, name: '大师', timeMs: 3000, maxDepth: 60 },
+  { id: 6, name: '皮卡鱼（极强）', pikafish: { timeMs: 1000 } },
 ];
-const DEPTHS = [
-  { id: 'fast', name: '快速分析', timeMs: 350 },
-  { id: 'normal', name: '标准分析', timeMs: 1000 },
-  { id: 'deep', name: '深入分析', timeMs: 2500 },
+// 复盘用的引擎和每步思考时间。皮卡鱼强得多，内置引擎不用下载
+const ANALYSIS = [
+  { id: 'pikafish:fast', name: '皮卡鱼 · 快速', engine: 'pikafish', timeMs: 250 },
+  { id: 'pikafish:normal', name: '皮卡鱼 · 标准', engine: 'pikafish', timeMs: 600 },
+  { id: 'pikafish:deep', name: '皮卡鱼 · 深入', engine: 'pikafish', timeMs: 1500 },
+  { id: 'builtin:normal', name: '内置引擎', engine: 'builtin', timeMs: 1000 },
 ];
+const ENGINE_NAME = { pikafish: '皮卡鱼', builtin: '内置引擎' };
 const SIDE_NAME = ['红方', '黑方'];
 const SAVE_KEY = 'xiangqi-review:game';
+const PREFS_KEY = 'xiangqi-review:prefs';
 const HINT_COLOR = '#1f6fd0', BEST_COLOR = '#2f9e61', NEUTRAL_COLOR = '#6b6b6b';
 
 const $ = (id) => document.getElementById(id);
@@ -40,7 +46,16 @@ let selected = 0, targets = [];
 let thinking = false, hint = null, hintPending = false;
 let engine = null, reqId = 0, pending = null;
 
-const review = { items: [], cursor: 0, done: 0, total: 0, depth: 'normal', pool: null, token: 0 };
+const prefs = store.get(PREFS_KEY) || {};
+const review = {
+  items: [], cursor: 0, done: 0, total: 0, pool: null, token: 0,
+  option: ANALYSIS.some((a) => a.id === prefs.analysis) ? prefs.analysis : 'pikafish:normal',
+  engine: 'pikafish', // 这次复盘实际用的引擎
+  notice: '',
+};
+
+const pika = new PikafishPool();
+let pikaLoad = null; // 正在下载引擎文件时为 { done, total }
 
 const board = new BoardView($('board'), onSquare);
 
@@ -71,14 +86,42 @@ function showNotice(text) {
   n.hidden = false;
 }
 
-function levelConfig() {
-  const lv = LEVELS.find((l) => l.id === game.level) || LEVELS[2];
+function currentLevel() {
+  return LEVELS.find((l) => l.id === game.level) || LEVELS[2];
+}
+
+function levelConfig(lv = currentLevel()) {
+  if (lv.pikafish) lv = LEVELS[4]; // 皮卡鱼不可用时退回内置引擎的最高档
   return lv.random ? { random: lv.random } : { timeMs: lv.timeMs, maxDepth: lv.maxDepth };
+}
+
+// 确保皮卡鱼引擎已加载（首次需要下载约 13 MB）
+function ensurePika(n) {
+  if (!pikaLoad && !pika.ready) pikaLoad = { done: 0, total: PIKAFISH_BYTES };
+  let lastPaint = 0;
+  return pika.ensure(n, (done, total) => {
+    pikaLoad = { done, total };
+    if (performance.now() - lastPaint < 120 && done < total) return;
+    lastPaint = performance.now();
+    paintPikaLoad();
+  }).finally(() => { pikaLoad = null; });
+}
+
+function pikaLoadText() {
+  const pct = pikaLoad ? Math.min(100, Math.round((pikaLoad.done / pikaLoad.total) * 100)) : 100;
+  return `正在下载皮卡鱼引擎（约 13 MB，仅首次）… ${pct}%`;
+}
+
+function paintPikaLoad() {
+  if (!pikaLoad) return;
+  for (const n of document.querySelectorAll('[data-pika-text]')) n.textContent = pikaLoadText();
+  for (const n of document.querySelectorAll('[data-pika-bar]')) n.style.width = Math.min(100, (pikaLoad.done / pikaLoad.total) * 100).toFixed(1) + '%';
 }
 
 function cancelSearch() {
   reqId++;
   hintPending = false;
+  pika.cancel();
   if (pending) {
     pending = null;
     startEngine(); // 正在算的那一步直接丢弃
@@ -105,8 +148,27 @@ function aiTurn() {
   };
   const book = bookMove(game.moves);
   if (book && pos.isLegal(book)) return deliver(book);
-  pending = { id, done: (msg) => deliver(msg.move) };
-  engine.postMessage({ type: 'play', id, fen: START_FEN, moves: game.moves, ...levelConfig() });
+  const builtin = () => {
+    if (id !== reqId) return;
+    pending = { id, done: (msg) => deliver(msg.move) };
+    engine.postMessage({ type: 'play', id, fen: START_FEN, moves: game.moves, ...levelConfig() });
+  };
+  const lv = currentLevel();
+  if (!lv.pikafish) return builtin();
+  const moves = game.moves.slice();
+  const loading = ensurePika(1);
+  renderStatus(); // 需要下载时显示进度
+  loading
+    .then(() => {
+      if (id !== reqId) return null;
+      renderStatus();
+      return pika.play(START_FEN, moves, lv.pikafish.timeMs);
+    })
+    .then((res) => { if (res && id === reqId) deliver(res.move); })
+    .catch(() => {
+      showNotice('皮卡鱼引擎加载失败，这一步改由内置引擎（大师档）来走。');
+      builtin();
+    });
 }
 
 function requestHint() {
@@ -115,15 +177,19 @@ function requestHint() {
   hintPending = true;
   renderStatus();
   renderButtons();
-  pending = {
-    id,
-    done: (msg) => {
-      hintPending = false;
-      if (id !== reqId || !msg.move) return render();
-      hint = { move: msg.move, text: moveToChinese(pos, msg.move) };
-      render();
-    },
+  const done = (msg) => {
+    if (id !== reqId) return;
+    hintPending = false;
+    if (!msg || !msg.move) return render();
+    hint = { move: msg.move, text: moveToChinese(pos, msg.move) };
+    render();
   };
+  // 皮卡鱼已经加载好就用它，和复盘时的判断保持一致；否则用内置引擎，不为一个提示去下载
+  if (pika.ready) {
+    pika.play(START_FEN, game.moves.slice(), 700).then(done, () => done(null));
+    return;
+  }
+  pending = { id, done };
   engine.postMessage({ type: 'play', id, fen: START_FEN, moves: game.moves, timeMs: 900, maxDepth: 60 });
 }
 
@@ -180,6 +246,7 @@ function cancelHintOnly() {
   if (hintPending) {
     hintPending = false;
     reqId++;
+    pika.cancel();
     // 引擎还在算提示：这次结果作废，但不必重启线程，下一条请求会排在后面
     pending = null;
   }
@@ -320,29 +387,68 @@ function startReview() {
   if (!game.result) return;
   cancelSearch();
   mode = 'review';
-  runAnalysis();
   const plies = userPlies();
   review.cursor = plies.length ? plies[0] : game.moves.length;
+  runAnalysis();
   render();
 }
 
-function runAnalysis() {
+function analysisOption() {
+  return ANALYSIS.find((a) => a.id === review.option) || ANALYSIS[1];
+}
+
+async function runAnalysis() {
   if (review.pool) review.pool.destroy();
+  review.pool = null;
+  pika.cancel();
   const token = ++review.token;
   const plies = userPlies();
+  const opt = analysisOption();
   review.items = new Array(game.moves.length).fill(null);
   review.done = 0;
   review.total = plies.length;
+  review.engine = opt.engine;
+  review.notice = '';
   if (!plies.length) return;
-  const timeMs = (DEPTHS.find((d) => d.id === review.depth) || DEPTHS[1]).timeMs;
+  const tasks = plies.map((ply) => ({
+    ply, fen: START_FEN, moves: game.moves.slice(0, ply), played: game.moves[ply], timeMs: opt.timeMs,
+  }));
+
+  if (opt.engine === 'pikafish') {
+    // 每个引擎线程要占两百多 MB 内存：手机上只开一个，电脑上最多三个
+    const small = window.matchMedia('(max-width: 900px)').matches || (navigator.deviceMemory || 8) <= 4;
+    const size = small ? 1 : Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1, plies.length));
+    try {
+      await ensurePika(size);
+    } catch (err) {
+      console.warn('Pikafish unavailable, falling back to the built-in engine:', err);
+    }
+    if (token !== review.token) return;
+    if (pika.ready) {
+      pika.newGame();
+      renderReview();
+      for (const task of tasks) {
+        pika.analyze(task).then((res) => {
+          if (res && token === review.token) onAnalysis({ ply: task.ply, ...res });
+        }, (err) => {
+          if (token !== review.token) return;
+          console.warn('Pikafish analysis failed:', err);
+          review.notice = '皮卡鱼引擎中途出错，有些着法没能分析。可以换成内置引擎再试一次。';
+          renderReview();
+        });
+      }
+      return;
+    }
+    review.engine = 'builtin';
+    review.notice = '皮卡鱼引擎加载失败，这次改用内置引擎分析（棋力较弱）。';
+    renderReview();
+  }
+
   const size = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1, plies.length));
   review.pool = new AnalysisPool(size, (msg) => {
-    if (msg.id !== token) return;
-    onAnalysis(msg);
+    if (msg.id === token) onAnalysis(msg);
   });
-  review.pool.run(plies.map((ply) => ({
-    type: 'analyze', id: token, ply, fen: START_FEN, moves: game.moves.slice(0, ply), played: game.moves[ply], timeMs,
-  })));
+  review.pool.run(tasks.map((t) => ({ type: 'analyze', id: token, ...t, timeMs: analysisOption().engine === 'builtin' ? t.timeMs : 1000 })));
 }
 
 function onAnalysis(msg) {
@@ -368,6 +474,7 @@ function onAnalysis(msg) {
 function leaveReview() {
   if (review.pool) review.pool.destroy();
   review.pool = null;
+  pika.cancel();
   review.token++;
   mode = 'play';
 }
@@ -445,13 +552,13 @@ function renderBoard() {
 
 function renderSeats() {
   const ai = 1 - game.playerSide;
-  const lv = LEVELS.find((l) => l.id === game.level) || LEVELS[2];
+  const lv = currentLevel();
   const turn = mode === 'play' && !game.result ? pos.side : -1;
   const seat = (side, name, sub, state) => `
     <span class="avatar ${side === RED ? 'red' : 'black'}">${side === RED ? '帅' : '将'}</span>
     <span class="seat-name">${name}</span><span class="seat-sub">${sub}</span>
     <span class="seat-state">${state}</span>`;
-  $('seatTop').innerHTML = seat(ai, 'AI', `${SIDE_NAME[ai]} · ${lv.name}`,
+  $('seatTop').innerHTML = seat(ai, 'AI', `${SIDE_NAME[ai]} · ${lv.name.replace(/（.*）/, '')}`,
     turn === ai ? '<i class="dot pulse"></i>思考中…' : '');
   $('seatBottom').innerHTML = seat(game.playerSide, '你', SIDE_NAME[game.playerSide],
     turn === game.playerSide ? '<i class="dot"></i>轮到你走' : '');
@@ -474,7 +581,10 @@ function renderStatus() {
     return;
   }
   let title, sub;
-  if (thinking) {
+  if (thinking && pikaLoad) {
+    title = '正在准备皮卡鱼引擎…';
+    sub = `<span data-pika-text>${pikaLoadText()}</span>`;
+  } else if (thinking) {
     title = 'AI 正在思考…';
     sub = '可以先想想下一步怎么走。';
   } else if (hintPending) {
@@ -591,15 +701,19 @@ function renderReview() {
       <div class="acc" style="--p:${sum.analyzed ? sum.accuracy.toFixed(0) : 0}"><div><b>${sum.analyzed ? sum.accuracy.toFixed(0) : '–'}</b><span>准确率</span></div></div>
       <div>
         <div class="sum-title">${resultTitle()} · ${esc(r.reason)}</div>
-        <div class="sum-sub">你执${SIDE_NAME[game.playerSide]}，共 ${Math.ceil(n / 2)} 回合，评了你的 ${review.total} 步棋</div>
+        <div class="sum-sub">你执${SIDE_NAME[game.playerSide]}，共 ${Math.ceil(n / 2)} 回合，用${ENGINE_NAME[review.engine]}评了你的 ${review.total} 步棋</div>
       </div>
     </div>
     <div class="counts">${CLASS_ORDER.map((c) => `
       <div class="count" style="--c:${CLASSES[c].color}"><b>${sum.counts[c]}</b><span>${CLASSES[c].label}</span></div>`).join('')}
     </div>
-    ${analysing ? `<div class="progress">
+    ${review.notice ? `<div class="sum-notice">${esc(review.notice)}</div>` : ''}
+    ${analysing && pikaLoad ? `<div class="progress">
+      <div class="progress-bar"><i data-pika-bar style="width:${(pikaLoad.done / pikaLoad.total * 100).toFixed(1)}%"></i></div>
+      <div class="progress-text" data-pika-text>${pikaLoadText()}</div></div>`
+    : analysing ? `<div class="progress">
       <div class="progress-bar"><i style="width:${(review.done / review.total * 100).toFixed(1)}%"></i></div>
-      <div class="progress-text">正在逐步分析… ${review.done} / ${review.total}</div></div>` : ''}
+      <div class="progress-text">${ENGINE_NAME[review.engine]}正在逐步分析… ${review.done} / ${review.total}</div></div>` : ''}
     <div class="chart-wrap">
       <div class="chart-cap"><span>你的胜率走势（上方 = 你占优）</span><span>点击图表跳转</span></div>
       ${chartSvg()}
@@ -608,7 +722,7 @@ function renderReview() {
       <button type="button" data-ply="${it.ply}"><span class="tag" style="--c:${CLASSES[it.cls].color}">${CLASSES[it.cls].symbol}</span>${Math.floor(it.ply / 2) + 1}. ${esc(game.texts[it.ply])}</button>`).join('')}</div>`
       : !analysing && sum.analyzed ? '<div class="keys"><span>这一局没有明显的失误，下得很稳。</span></div>' : ''}
     <div class="sum-actions">
-      <select id="selDepth" aria-label="分析强度">${DEPTHS.map((d) => `<option value="${d.id}" ${d.id === review.depth ? 'selected' : ''}>${d.name}</option>`).join('')}</select>
+      <select id="selDepth" aria-label="分析引擎和强度">${ANALYSIS.map((d) => `<option value="${d.id}" ${d.id === review.option ? 'selected' : ''}>${d.name}</option>`).join('')}</select>
       <button type="button" data-act="back">返回棋局</button>
       <button type="button" class="primary" data-act="new">再来一局</button>
     </div>`;
@@ -645,7 +759,7 @@ function renderReview() {
         </dl>
         <div class="evalrow">
           <span>局面评分（你的视角）：${same ? formatScore(item.played.score) : `${formatScore(item.best.score)} → ${formatScore(item.played.score)}`}</span>
-          <span>搜索深度 ${item.best.depth} 层</span>
+          <span>${ENGINE_NAME[review.engine]} · 搜索深度 ${item.best.depth} 层</span>
         </div>
         <div class="legend">
           <span><i style="--c:${c.color}"></i>你的走法</span>
@@ -705,7 +819,8 @@ $('summaryCard').addEventListener('click', (e) => {
 });
 $('summaryCard').addEventListener('change', (e) => {
   if (e.target.id !== 'selDepth') return;
-  review.depth = e.target.value;
+  review.option = e.target.value;
+  store.set(PREFS_KEY, { analysis: review.option });
   runAnalysis();
   renderReview();
   renderBoard();
